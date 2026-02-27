@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hospital-Level Loss Dashboard (Demo)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Recharts depends on React -> but wait, Recharts is hard to use without JSX. -->
+  <!-- Let's just use Chart.js, it's very simple in pure JS -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      background-color: #0f172a;
+      color: #e2e8f0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+  </style>
+</head>
+<body class="p-8 max-w-7xl mx-auto">
+  <div class="mb-8">
+    <h1 class="text-3xl font-bold text-white mb-2 flex items-center gap-3">
+      <span class="text-blue-500">🏥</span> Hospital-Level Loss Exposure
+    </h1>
+    <p class="text-slate-400">Real-time risk-weighted financial loss contribution per hospital.</p>
+  </div>
+
+  <div class="mb-6 flex gap-2">
+    <button onclick="fetchData('7d')" id="btn-7d" class="px-4 py-2 rounded text-sm bg-slate-800 text-slate-400 hover:text-white transition-colors">7D</button>
+    <button onclick="fetchData('30d')" id="btn-30d" class="px-4 py-2 rounded text-sm bg-slate-800 text-slate-400 hover:text-white transition-colors">30D</button>
+    <button onclick="fetchData('all')" id="btn-all" class="px-4 py-2 rounded text-sm bg-blue-600 text-white font-medium shadow-lg shadow-blue-500/20">ALL</button>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+    
+    <!-- Table -->
+    <div class="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden shadow-2xl backdrop-blur-md">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left">
+          <thead class="text-xs text-slate-400 uppercase bg-slate-800/80">
+            <tr>
+              <th class="px-5 py-4">Hospital</th>
+              <th class="px-5 py-4 text-right">Claims <span class="text-red-400/80">(High Risk)</span></th>
+              <th class="px-5 py-4 text-right">Estimated Loss</th>
+              <th class="px-5 py-4 text-center">Exposure %</th>
+            </tr>
+          </thead>
+          <tbody id="table-body">
+            <tr><td colspan="4" class="text-center py-8 text-slate-500 animate-pulse">Loading data...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 shadow-2xl backdrop-blur-md h-[400px]">
+      <canvas id="lossChart"></canvas>
+    </div>
+
+  </div>
+
+  <script>
+    let currentChart = null;
+    let currentRange = 'all';
+
+    const formatINR = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val);
+
+    function updateButtons(range) {
+      document.querySelectorAll('button').forEach(btn => {
+        btn.className = "px-4 py-2 rounded text-sm bg-slate-800 text-slate-400 hover:text-white transition-colors";
+      });
+      const activeBtn = document.getElementById(`btn-${range}`);
+      activeBtn.className = "px-4 py-2 rounded text-sm bg-blue-600 text-white font-medium shadow-lg shadow-blue-500/20";
+    }
+
+    async function fetchData(range) {
+      currentRange = range;
+      updateButtons(range);
+      
+      const tbody = document.getElementById('table-body');
+      tbody.innerHTML = `<tr><td colspan="4" class="text-center py-8 text-slate-500 animate-pulse">Fetching intelligence data...</td></tr>`;
+
+      try {
+        const response = await fetch(`http://localhost:8000/api/v1/hospital-loss?range=${range}`);
+        const data = await response.json();
+        
+        // Render Table
+        if (data.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="4" class="text-center py-8 text-slate-500">No scored claims found for this period.</td></tr>`;
+        } else {
+          tbody.innerHTML = data.map(row => {
+            let badgeClass = "bg-green-500/10 text-green-400 border-green-500/20";
+            if (row.fraud_exposure_percentage > 30) badgeClass = "bg-red-500/10 text-red-400 border-red-500/20";
+            else if (row.fraud_exposure_percentage >= 15) badgeClass = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+
+            return `
+              <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                <td class="px-5 py-4 font-medium text-slate-200">${row.hospital_id}</td>
+                <td class="px-5 py-4 text-right text-slate-400">
+                  ${row.total_claims} <span class="text-red-400/80">(${row.high_risk_claims})</span>
+                </td>
+                <td class="px-5 py-4 text-right font-semibold text-slate-300">
+                  ${formatINR(row.risk_weighted_loss)}
+                </td>
+                <td class="px-5 py-4 text-center">
+                  <span class="px-3 py-1 text-xs font-semibold rounded-full border ${badgeClass}">
+                    ${row.fraud_exposure_percentage}%
+                  </span>
+                </td>
+              </tr>
+            `;
+          }).join('');
+        }
+
+        // Render Chart
+        const chartData = data.slice(0, 10);
+        const ctx = document.getElementById('lossChart').getContext('2d');
+        
+        if (currentChart) {
+          currentChart.destroy();
+        }
+
+        currentChart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: chartData.map(d => d.hospital_id),
+            datasets: [{
+              label: 'Risk Weighted Loss (₹)',
+              data: chartData.map(d => d.risk_weighted_loss),
+              backgroundColor: chartData.map((d, i) => i < 3 ? '#ef4444' : '#f59e0b'),
+              borderRadius: 4,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: function(context) {
+                    return formatINR(context.raw);
+                  }
+                }
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: true,
+                grid: { color: '#ffffff10' },
+                ticks: { color: '#94a3b8', callback: function(value) { return '₹' + value / 1000 + 'k'; } }
+              },
+              x: {
+                grid: { display: false },
+                ticks: { color: '#94a3b8' }
+              }
+            }
+          }
+        });
+
+      } catch (err) {
+        console.error(err);
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center py-8 text-red-400 flex flex-col items-center">
+          <span class="text-2xl mb-2">⚠️</span>
+          Failed to fetch data. Ensure backend is running.
+        </td></tr>`;
+      }
+    }
+
+    // Load initial data
+    fetchData('all');
+  </script>
+</body>
+</html>
